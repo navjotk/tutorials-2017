@@ -56,25 +56,26 @@ create highly optimized low-level C code. For this purpose Devito uses
 the symbolic algebra package SymPy [@Meurer17] to facilitate the
 automatic creation of derivative expressions, allowing the quick and
 efficient generation of high-order wave propagators with variable
-stencil orders.
+stencil orders, while automated performance optimization using
+state-of-the-art compiler techniques are used to ensure
+computational efficiency.
 
 At the core of Devito's symbolic API are two symbolic types that
 behave like SymPy function objects, while also managing
 user data:
 
-* `DenseData` objects represent a spatially varying function
+* `Function` objects represent a spatially varying function
   discretized on a regular cartesian grid. For example, a function
-  symbol `f = DenseData(name='f', shape=(nx, ny), space_order=2)`
+  symbol `f = Function(name='f', ..., space_order=2)`
   is denoted symbolically as `f(x, y)`. Auto-generated symbolic
   expressions for finite difference derivatives are provided by these
-  objects via shorthand expressions, enabling the syntax `f.dx` to
-  denote $\frac{\partial f}{\partial x}$ and `f.dx2` for
-  $\frac{\partial^2 f}{\partial x^2}$.
+  objects via shorthand expressions, where the `space_order` parameter
+  defines the order of the created finite difference stencil.
 
-* `TimeData` objects represent a time-dependent function
+* `TimeFunction` objects represent a time-dependent function
   that includes leading dimension $t$, for example `g(t, x, y)`. In
-  addition to spatial derivatives `TimeData` symbols also provide
-  time derivatives `g.dt` and `g.dt2`, as well as options to save
+  addition to spatial derivatives `TimeFunction` symbols also provide
+  time derivatives `g.dt` and `g.dt2`, as well as options to store
   the entire data along the time axis.
 
 To demonstrate Devito's symbolic capabilities, let us consider a
@@ -82,39 +83,41 @@ time-dependent function $\vd{u}(t, x, y)$ representing the discrete forward
 wavefield. We can define this as a `TimeData` object in Devito:
 
 ```python
-    u = TimeData(name="u", shape=model.shape_domain, time_order=2,
-                 space_order=2, save=True, time_dim=nt)
+  u = TimeData(name='u', grid=model.grid, time_order=2,
+               space_order=2, save=True, timd_dim=nt)
 ```
 
-where the parameter `shape` defines the size of the allocated memory
-region, `time_order` and `space_order` define the default
-discretization order of the derivative expressions and the parameters
-`save=True` and `time_dim` force the entire wavefield to be stored in
-memory.
+where the the `grid` object provided by the `model` defines the size
+of the allocated memory region, `time_order` and `space_order` define
+the default discretization order of any derived derivative expressions.
 
-We can now use this wavefield to generate simple discretized stencil
-expressions for finite difference derivatives as:
+We can now use this symbolic representation of our wavefield to
+generate simple discretized stencil expressions for finite difference
+derivatives using shorthand expressions, such as `u.dx` and `u.dx2` to
+denote $\frac{\partial u}{\partial x}$ and $\frac{\partial^2
+u}{\partial x^2}$ respectively.
 
 ```python
   In []: u
   Out[]: u(t, x, y)
 
-  In []: u.dt
-  Out[]: -u(t, x, y)/s + u(t+s, x, y)/s
+  In []: u.dx
+  Out[]: -u(t, x, y)/h_x + u(t, x + h_x, y)/h_x
 
-  In []: u.dt2
-  Out[]: -2*u(t, x, y)/s**2 + u(t-s, x, y)/s**2 + u(t+s, x, y)/s**2
+  In []: u.dx2
+  Out[]: -2*u(t, x, y)/h_x**2 + u(t, x-h_x, y)/h_x**2 + u(t, x-h_x, y)/h_x**2
 ```
 
 Using the automatic derivation of derivative expressions we can now
 implement a discretized expression for Equation #WE\ without the
 source term $q(x,y,t;x_s, y_s)$. The `model` object which we created
 earlier, already contains the squared slowness $\vd{m}(x, y)$ and 
-damping term $\vd{\eta}(x, y)$ as `DenseData` objects:
+damping term $\vd{\eta}(x, y)$ as `Function` objects:
 
 ```python
-    # Set up discretized wave equation
-    pde = model.m * u.dt2 - u.laplace + model.damp * u.dt
+  # Set up discretized wave equation
+  m, eta = model.m, model.damp
+  pde = m * u.dt2 - u.laplace + eta * u.dt
 ```
 
 This expression translates to the following equation if we write out
@@ -125,7 +128,7 @@ for the moment ignore the damping term:
  \frac{\vd{m}}{s^2} \Big( \vd{u}[\text{time}-s] - 2\vd{u}[\text{time}] + \vd{u}[\text{time}+s]\Big) - \Delta \vd{u}[\text{time}] = 0, \quad \text{time}=1 \cdots n_{t-1}
 ```
 
-with time being the current time step and $s$ being the time stepping interval.
+with time being the current time step and $dt$ being the time stepping interval.
 As we can see, the Laplacian $\Delta \vd{u}$ is simply expressed with Devito by
 the shorthand expression `u.laplace`, where the order of the derivative stencil is
 defined by the `space_order` parameter used to create the symbol `u(t, x, y, z)`. 
@@ -143,14 +146,14 @@ the update of the wavefield for the new time step $\vd{u}(\text{time}+s)$, which
 is expressed as `u.forward` in Devito:
 
 ```python
-    # Rearrange PDE to obtain new wavefield at next time step
-    stencil = Eq(u.forward, solve(pde, u.forward)[0])
+  # Rearrange PDE to obtain new wavefield at next time step
+  stencil = Eq(u.forward, solve(pde, u.forward)[0])
 ```
 
 This `stencil` expression now represents the finite difference scheme from Equation #WEstencil,
 including the FD approximation of the Laplacian and the damping term. The `stencil` expression
-defines the update for a single time step only, but since the wavefield `u` is a `TimeData` object,
-Devito knows that we are solving a time-dependent problem over a number of time steps.
+defines the update for a single time step only, but since the wavefield `u` is a `TimeFunction`
+object, Devito knows that we are solving a time-dependent problem over a number of time steps.
 
 
 ### Setting up the acquisition geometry
@@ -168,9 +171,9 @@ and we see that at time step `i` we need to add the source term corresponding to
 The code that implements the definition of the receiver and sources, with locations collected in the arrays `rec_coords` and `src_coords`, reads in `Python` as 
 
 ```	
-	# define source injection array for given a source wavelet, coordinates and frequency
-	src = RickerSource(name='src', ndim=2, f0=f0, time=time, coordinates=src_coords)
-	src_term = src.inject(field=u.forward, expr=src * dt**2 / model.m, offset=model.nbpml)
+  # Define source injection array for given a source wavelet, coordinates and frequency
+  src = RickerSource(name='src', grid=model.grid, f0=f0, time=time, coordinates=src_coords)
+  src_term = src.inject(field=u.forward, expr=src * dt**2 / m, offset=model.nbpml)
 ```
 
 The parameter `offset` is the size of the absorbing layer as shown in Figure #model (source position shifted by `offset`).
@@ -178,43 +181,58 @@ The parameter `offset` is the size of the absorbing layer as shown in Figure #mo
 On the other side, the receiver is only a read of the wavefield at a specific position at time `i` and does not require any weight.
 
 ```python
-	# create receiver array from receiver coordinates
-	rec = Receiver(name='rec', npoint=101, ntime=nt, ndim=2, coordinates=rec_coords)
-	rec_term = rec.interpolate(u, offset=model.nbpml)
+  # Create receiver array from receiver coordinates
+  rec = Receiver(name='rec', grid=model.grid, npoint=101, ntime=nt, coordinates=rec_coords)
+  rec_term = rec.interpolate(u, offset=model.nbpml)
 ```
 
 and the `offset` parameter also correct for the origin shift from the model extension.
 
 ### Forward simulation 
 
-With the source/receiver geometry set and the wave-equation stencil generated, we can now define our forward propagator by adding the source and receiver terms to our stencil object; that is, in `Python` we have:
+With the source/receiver geometry set and the wave-equation stencil
+generated, we can now define our forward propagator by adding the
+source and receiver terms to our previously defined `stencil`
+object. The resulting list is used to generate a `Operator` object
+that performs automated generation and optimization of low-level C
+code according to the symbolic expressions provided:
 
 ```python
-	# Create forward propagator
-	op_fwd = Operator([stencil] + src_term + rec_term,
-	              subs={t.spacing: dt, x.spacing: spacing[0],
-	                    y.spacing: spacing[1]})
+  # Create forward propagator
+  op_fwd = Operator([stencil] + src_term + rec_term)
 ```
 
-The Devito operator creation is minimalist thanks to the symbolic representation of the stencil. All information such as dimension sizes (to generate loops), are contained in the stencil and more specifically in its arguments `u, m, dam, src, rec` that still carry the metadata provided at object instantiation (`TimeData, DenseData, ...` creation). The only extra argument is `subs` that provides substitution method for the constants. At generation time, all instances of `x.spacing=h_x` will be replaced by its actual value. Once the operator created, we can access the generated C code with `op_fw.ccode`.
+The symbolic expressions used to create `Operator` contain sufficient
+meta-information for Devito to create a fully functional computational
+kernel. The dimension symbols contained in the symbolic function
+object (`t, x, y, z`) define the loop structure of the created code,
+while allowing Devito to automatically optimize the underlying loop
+structure to increase performance.
+
+The size of the loops and spacing between grid points is inferred from
+the symbolic `Function` objects and associated `model.grid` object at
+run-time. As a result we can invoke the generated kernel through a
+simple Python function call by supplying the number of timesteps
+`time` and the timestep size `dt`. The user data associated with each
+`Function` is updated in-place during operator execution, allowing us
+to extract the final wavefield and shotrecord directly from the
+symbolic function objects.
+
+```python	
+  # Generate wavefield snapshots and a shot record
+  op_fwd(time=n_timesteps, dt=model.critical_dt)
+
+  # Access the wavefield and shot record at the end of the propagation.
+  wavefield = u.data
+  shotrecord = rec.data
+```
+
+Although Devito `Operator` objects are fully self-contained Python,
+the underlying C code can easily be accessed via `op_fw.ccode`, as
+shown in Figure #Forward.
 
 ####Figure:{#Cgen}
 ![Generated C code](Figures/ccode-crop.png)
-
-We can finally execute the forward modeling propagator with the simple command:
-
-```python	
-	# Generate wavefield snapshots and a shot record
-	op_fwd.apply()
-```
-
-Once the propagator executed, we obtain the modeled wavefield and shot record from the symbolic objects. Each Devito symbolic types has a `data` field that contains the result.
-
-```
-	# Access the wavefield and shot record at the end of the propagation.
-	wavefield = u.data
-	shotrecord = rec.data
-```
 
 In Figure #Forward, we show the resulting shot record. A movie of snapshots of the forward wavefield can be generated by executing the last cell of **`forward_modeling.ipynb`**.
 
