@@ -253,10 +253,10 @@ In this first part of the tutorial, we have demonstrated how to set up discretiz
 
 ### Installation
 
-This tutorial and the coming second part are based on Devito version 3.0.3. It also require to install the full software with examples, not only the code generation API. To install devito
+This tutorial and the coming second part are based on Devito version 3.1. It also require to install the full software with examples, not only the code generation API. To install devito
 
 ```
-	git clone -b v3.0.3 https://github.com/opesci/devito
+	git clone -b v3.1.0 https://github.com/opesci/devito
 	cd devito
 	conda env create -f environment.yml
 	source activate devito
